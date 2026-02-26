@@ -93,30 +93,10 @@ def generate_master_asm(workspace: Path, bank_layout: dict) -> Path:
         "",
     ]
 
-    # SNES interrupt vectors (LoROM: bank $00, $FFxx)
-    # Vectors must be 16-bit addresses within bank $00.
-    # NMI_TRAMPOLINE / IRQ_TRAMPOLINE / RESET_TRAMPOLINE are defined above in BANK00
-    # and use JML to reach the actual handlers in any translated bank.
+    # Fallback stubs — must come BEFORE VECTORS so labels are defined.
+    # Only assembled if translated code did not define the label.
     lines += [
-        '; SNES interrupt vectors',
-        '.segment "VECTORS"',
-        ".org $00FFE4",
-        '    .word $0000              ; COP (native)',
-        '    .word $0000              ; BRK (native)',
-        '    .word $0000              ; ABORT (native)',
-        '    .word NMI_TRAMPOLINE     ; NMI (native)',
-        '    .word $0000              ; (unused in native mode)',
-        '    .word IRQ_TRAMPOLINE     ; IRQ (native)',
-        '.org $00FFF4',
-        '    .word $0000              ; COP (emulation)',
-        '    .word $0000              ; (unused)',
-        '    .word $0000              ; ABORT (emulation)',
-        '    .word NMI_TRAMPOLINE     ; NMI (emulation)',
-        '    .word RESET_TRAMPOLINE   ; RESET',
-        '    .word IRQ_TRAMPOLINE     ; IRQ/BRK (emulation)',
-        "",
-        "; Fallback stubs — only assembled if translated code did not define the label.",
-        "; The trampolines above JML to these, so they must always be present.",
+        "; Fallback stubs for interrupt handlers",
         ".ifndef NMI_HANDLER",
         "NMI_HANDLER:",
         "    RTI",
@@ -130,6 +110,31 @@ def generate_master_asm(workspace: Path, bank_layout: dict) -> Path:
         "    JSR SNES_PPU_INIT",
         "    BRA *",
         ".endif",
+        "",
+    ]
+
+    # SNES interrupt vectors (LoROM: $FFE0–$FFFF within bank $00)
+    # The VECTORS segment is placed at $FFE0 inside BANK00 by the linker config.
+    # 32 bytes = 16 words covering $FFE0–$FFFF. No .org needed.
+    lines += [
+        '; SNES interrupt vectors ($FFE0–$FFFF)',
+        '.segment "VECTORS"',
+        '    .word $0000              ; $FFE0: (unused)',
+        '    .word $0000              ; $FFE2: (unused)',
+        '    .word $0000              ; $FFE4: COP (native)',
+        '    .word $0000              ; $FFE6: BRK (native)',
+        '    .word $0000              ; $FFE8: ABORT (native)',
+        '    .word NMI_TRAMPOLINE     ; $FFEA: NMI (native)',
+        '    .word $0000              ; $FFEC: (unused)',
+        '    .word IRQ_TRAMPOLINE     ; $FFEE: IRQ (native)',
+        '    .word $0000              ; $FFF0: (unused)',
+        '    .word $0000              ; $FFF2: (unused)',
+        '    .word $0000              ; $FFF4: COP (emulation)',
+        '    .word $0000              ; $FFF6: (unused)',
+        '    .word $0000              ; $FFF8: ABORT (emulation)',
+        '    .word NMI_TRAMPOLINE     ; $FFFA: NMI (emulation)',
+        '    .word RESET_TRAMPOLINE   ; $FFFC: RESET',
+        '    .word IRQ_TRAMPOLINE     ; $FFFE: IRQ/BRK (emulation)',
     ]
 
     master_path = workspace / "master.asm"
@@ -159,14 +164,6 @@ def generate_lorom_cfg(workspace: Path, bank_layout: dict) -> Path:
         "size": 0x8000,
     })
 
-    # Vectors in bank $00 at $FFxx
-    all_banks.append({
-        "snes_bank": "0x00",
-        "seg": "VECTORS",
-        "start": 0x00FFE0,
-        "size": 0x20,
-    })
-
     memory_lines = ["MEMORY {"]
     # ZEROPAGE maps to SNES Direct Page (WRAM at $0000–$00FF, not in ROM file)
     memory_lines.append("    ZEROPAGE: start = $0000, size = $0100, type = rw, define = yes;")
@@ -182,6 +179,10 @@ def generate_lorom_cfg(workspace: Path, bank_layout: dict) -> Path:
             f"fill = yes, fillval = $FF, file = %O;"
         )
         seg_lines.append(f"    {seg}: load = {seg}, type = ro;")
+
+    # VECTORS segment lives inside BANK00 at CPU $FFE0 (file offset $7FE0)
+    # NOT a separate memory area — placed within BANK00 using start address
+    seg_lines.append("    VECTORS: load = BANK00, type = ro, start = $FFE0;")
 
     memory_lines.append("}")
     seg_lines.append("}")
