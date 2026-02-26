@@ -120,7 +120,8 @@ def normalize_ghidra_line(line: str) -> str:
     - Strip `<UNSUPPORTED>` tags from implied-mode instructions
     """
     # Strip <UNSUPPORTED> (Ghidra emits this for implied-mode operands)
-    line = line.replace("<UNSUPPORTED>", "").rstrip()
+    # Only strip trailing spaces/tabs, NOT newlines (preserve line structure)
+    line = line.replace("<UNSUPPORTED>", "").rstrip(" \t")
     # Convert 0xNN hex literals to $NN (handles #0x and plain 0x)
     line = re.sub(r'#0x([0-9A-Fa-f]+)', lambda m: '#$' + m.group(1).upper().zfill(2), line)
     line = re.sub(r'(?<![#\w])0x([0-9A-Fa-f]+)', lambda m: '$' + m.group(1).upper().zfill(2), line)
@@ -136,7 +137,11 @@ def preprocess_line(line: str, reset_vec: int, skip_counter: list) -> tuple[str,
     # Normalize Ghidra output format first
     line = normalize_ghidra_line(line)
 
-    stripped = line.strip()
+    # Preserve trailing newline so "".join() in preprocess_bank works correctly
+    eol = "\n" if line.endswith("\n") else ""
+    line_noeol = line.rstrip("\n\r")
+
+    stripped = line_noeol.strip()
     if not stripped or stripped.startswith(";"):
         return line, False
 
@@ -149,12 +154,12 @@ def preprocess_line(line: str, reset_vec: int, skip_counter: list) -> tuple[str,
         label_name = parts[0].rstrip(":")
         # Inject 65816 init preamble after the RESET handler label
         if label_name in ("RESET", "RESET_HANDLER"):
-            return line + "\n" + RESET_PREAMBLE_65816, False
+            return line_noeol + "\n" + RESET_PREAMBLE_65816 + eol, False
         # Also match by address for disassemblers that emit numeric labels
         try:
             addr = int(label_name.lstrip("$"), 16)
             if addr == reset_vec:
-                return line + "\n" + RESET_PREAMBLE_65816, False
+                return line_noeol + "\n" + RESET_PREAMBLE_65816 + eol, False
         except ValueError:
             pass
         return line, False
@@ -164,7 +169,7 @@ def preprocess_line(line: str, reset_vec: int, skip_counter: list) -> tuple[str,
     op_lower = op.lower().split(",")[0].strip()
 
     needs_llm = False
-    indent = line[: len(line) - len(line.lstrip())]
+    indent = line_noeol[: len(line_noeol) - len(line_noeol.lstrip())]
 
     # ---- Conditional branch expansion → inverted-condition + JMP ----
     # 6502 relative branches have only ±127 byte range. After reassembly into
@@ -179,21 +184,19 @@ def preprocess_line(line: str, reset_vec: int, skip_counter: list) -> tuple[str,
         expanded = (
             f"{indent}{inverted} {skip_lbl}    ; was: {mnem} {target}\n"
             f"{indent}JMP {target}\n"
-            f"{skip_lbl}:"
+            f"{skip_lbl}:{eol}"
         )
         return expanded, False
 
     # ---- Hardware register write: STA/STX/STY $2000–$401F ----
     if mnem in STORE_MNEMONICS and op_lower in HW_WRITE_WRAPPERS:
         wrapper = HW_WRITE_WRAPPERS[op_lower]
-        indent = line[: len(line) - len(line.lstrip())]
-        return f"{indent}JSR {wrapper}    ; was: {mnem} {op}", False
+        return f"{indent}JSR {wrapper}    ; was: {mnem} {op}{eol}", False
 
     # ---- Hardware register read: LDA/LDX/LDY $2002, $2007 ----
     if mnem in LOAD_MNEMONICS and op_lower in HW_READ_WRAPPERS:
         wrapper = HW_READ_WRAPPERS[op_lower]
-        indent = line[: len(line) - len(line.lstrip())]
-        return f"{indent}JSR {wrapper}    ; was: {mnem} {op}", False
+        return f"{indent}JSR {wrapper}    ; was: {mnem} {op}{eol}", False
 
     # ---- Indirect jump — flag for LLM ----
     if mnem == "JMP" and "(" in op:
