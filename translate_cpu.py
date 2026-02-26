@@ -82,6 +82,15 @@ LLM_TRIGGER_PATTERNS = [
     re.compile(r"\$[89AB][0-9A-Fa-f]{3}:", re.IGNORECASE),  # mapper reg write (label)
 ]
 
+# Conditional branch mnemonics and their logical inverses
+BRANCH_MNEMONICS = {"BCC", "BCS", "BEQ", "BNE", "BPL", "BMI", "BVC", "BVS"}
+BRANCH_INVERT = {
+    "BCC": "BCS", "BCS": "BCC",
+    "BEQ": "BNE", "BNE": "BEQ",
+    "BPL": "BMI", "BMI": "BPL",
+    "BVC": "BVS", "BVS": "BVC",
+}
+
 # 65816 RESET preamble injected before the translated RESET handler body
 RESET_PREAMBLE_65816 = """\
     ; === 65816 initialization — injected by translate_cpu.py ===
@@ -99,25 +108,29 @@ RESET_PREAMBLE_65816 = """\
 """
 
 
-def preprocess_line(line: str, reset_vec: int) -> tuple[str, bool]:
+def preprocess_line(line: str, reset_vec: int, skip_counter: list) -> tuple[str, bool]:
     """
     Deterministic pre-processor: applies mechanical substitutions to one line.
     Returns (transformed_line, needs_llm).
+    skip_counter is a single-element list [int] used to generate unique branch skip labels.
     """
     stripped = line.strip()
     if not stripped or stripped.startswith(";"):
         return line, False
 
-    upper = stripped.upper()
     parts = stripped.split(None, 2)
     if not parts:
         return line, False
 
     # ---- Label detection ----
     if parts[0].endswith(":"):
-        label_addr_str = parts[0].rstrip(":")
+        label_name = parts[0].rstrip(":")
+        # Inject 65816 init preamble after the RESET handler label
+        if label_name in ("RESET", "RESET_HANDLER"):
+            return line + "\n" + RESET_PREAMBLE_65816, False
+        # Also match by address for disassemblers that emit numeric labels
         try:
-            addr = int(label_addr_str.lstrip("$"), 16)
+            addr = int(label_name.lstrip("$"), 16)
             if addr == reset_vec:
                 return line + "\n" + RESET_PREAMBLE_65816, False
         except ValueError:
@@ -129,6 +142,24 @@ def preprocess_line(line: str, reset_vec: int) -> tuple[str, bool]:
     op_lower = op.lower().split(",")[0].strip()
 
     needs_llm = False
+    indent = line[: len(line) - len(line.lstrip())]
+
+    # ---- Conditional branch expansion → inverted-condition + JMP ----
+    # 6502 relative branches have only ±127 byte range. After reassembly into
+    # SNES banks the targets are often far away, causing ca65 range errors.
+    # Expand every conditional branch to a 3-instruction sequence that has no
+    # range restriction: Bcc skip / JMP target / skip:
+    if mnem in BRANCH_MNEMONICS:
+        target = op.split(";")[0].strip()
+        inverted = BRANCH_INVERT[mnem]
+        skip_lbl = f"_brl_{skip_counter[0]}"
+        skip_counter[0] += 1
+        expanded = (
+            f"{indent}{inverted} {skip_lbl}    ; was: {mnem} {target}\n"
+            f"{indent}JMP {target}\n"
+            f"{skip_lbl}:"
+        )
+        return expanded, False
 
     # ---- Hardware register write: STA/STX/STY $2000–$401F ----
     if mnem in STORE_MNEMONICS and op_lower in HW_WRITE_WRAPPERS:
@@ -156,16 +187,21 @@ def preprocess_line(line: str, reset_vec: int) -> tuple[str, bool]:
     return line, needs_llm
 
 
-def preprocess_bank(asm_text: str, reset_vec: int) -> tuple[str, list[int]]:
+def preprocess_bank(asm_text: str, reset_vec: int,
+                    skip_counter: list | None = None) -> tuple[str, list[int]]:
     """
     Run Pass 1 on a full bank .asm file.
     Returns (transformed_text, line_numbers_needing_llm).
+    skip_counter is an optional single-element list shared across banks so that
+    generated branch-skip labels (_brl_N) are unique across the entire assembled ROM.
     """
+    if skip_counter is None:
+        skip_counter = [0]
     lines = asm_text.splitlines(keepends=True)
     out_lines = []
     llm_lines = []
     for i, line in enumerate(lines):
-        transformed, needs_llm = preprocess_line(line, reset_vec)
+        transformed, needs_llm = preprocess_line(line, reset_vec, skip_counter)
         out_lines.append(transformed)
         if needs_llm:
             llm_lines.append(i)
@@ -276,13 +312,15 @@ def translate_banks(workspace: Path, manifest: dict, model: str, use_llm: bool):
 
     translation_log = []
     bank_files = sorted(disasm_dir.glob("bank_*.asm"))
+    # Shared counter ensures _brl_N skip labels are unique across all bank files
+    global_skip_counter = [0]
 
     for bank_file in bank_files:
         print(f"[translate_cpu] Processing {bank_file.name} ...")
         asm_text = bank_file.read_text()
 
         # Pass 1: deterministic pre-processing
-        transformed, llm_line_nums = preprocess_bank(asm_text, reset_vec)
+        transformed, llm_line_nums = preprocess_bank(asm_text, reset_vec, global_skip_counter)
 
         # Pass 2: LLM for flagged functions (NMI, IRQ, and complex cases)
         if use_llm and client and functions_data:

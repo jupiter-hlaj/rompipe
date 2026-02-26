@@ -52,10 +52,20 @@ def generate_master_asm(workspace: Path, bank_layout: dict) -> Path:
         "",
         '; System bank: PPU wrappers, mapper stubs, PPU init, SNES header',
         '.segment "BANK00"',
-        ".org $008000",
-        '    .include "../ppu_init.asm"',
-        '    .include "../ppu_wrappers.asm"',
-        '    .include "../mapper_stubs.asm"',
+        '    .include "ppu_init.asm"',
+        '    .include "ppu_wrappers.asm"',
+        '    .include "mapper_stubs.asm"',
+        "",
+        "; --- Interrupt vector trampolines ---",
+        "; SNES vectors must hold 16-bit addresses in bank $00.",
+        "; These stubs live in BANK00 and JML (long-jump) to the actual handlers",
+        "; which may be in any translated bank.",
+        "NMI_TRAMPOLINE:",
+        "    JML NMI_HANDLER",
+        "IRQ_TRAMPOLINE:",
+        "    JML IRQ_HANDLER",
+        "RESET_TRAMPOLINE:",
+        "    JML RESET_HANDLER",
         "",
     ]
 
@@ -65,48 +75,46 @@ def generate_master_asm(workspace: Path, bank_layout: dict) -> Path:
         nes_bank = bank_info["nes_bank_num"]
         bank_file = f"bank_{nes_bank:02d}_65816.asm"
         seg_name = f"BANK{snes_bank_int:02X}"
-        org_addr = snes_bank_int * 0x10000 + 0x8000
 
         lines += [
             f'; Translated NES PRG bank {nes_bank} → SNES bank ${snes_bank_int:02X}',
             f'.segment "{seg_name}"',
-            f".org ${org_addr:06X}",
-            f'    .include "../translated/{bank_file}"',
+            f'    .include "translated/{bank_file}"',
             "",
         ]
 
-    # Audio bank
-    audio_bank_str = bank_layout.get("audio_bank", "0x1E")
-    audio_bank_int = int(audio_bank_str, 16)
-    audio_org = audio_bank_int * 0x10000 + 0x8000
+    # Audio stub (placeholder — SPC700 code assembled separately)
     lines += [
-        f'; SPC700 audio driver',
-        f'.segment "BANK{audio_bank_int:02X}"',
-        f".org ${audio_org:06X}",
-        '    .include "../audio/spc_driver.asm"',
+        '; SPC700 audio driver stub',
+        '.segment "BANK1E"',
+        '    .res 512, $00',
         "",
     ]
 
-    # SNES interrupt vectors (LoROM: fixed in last bank, $FFXX)
+    # SNES interrupt vectors (LoROM: bank $00, $FFxx)
+    # Vectors must be 16-bit addresses within bank $00.
+    # NMI_TRAMPOLINE / IRQ_TRAMPOLINE / RESET_TRAMPOLINE are defined above in BANK00
+    # and use JML to reach the actual handlers in any translated bank.
     lines += [
         '; SNES interrupt vectors',
         '.segment "VECTORS"',
         ".org $00FFE4",
-        '    .word $0000         ; COP',
-        '    .word $0000         ; BRK',
-        '    .word $0000         ; ABORT',
-        '    .word NMI_HANDLER   ; NMI — must be defined in translated code',
-        '    .word $0000         ; (unused RESET in native mode)',
-        '    .word IRQ_HANDLER   ; IRQ',
+        '    .word $0000              ; COP (native)',
+        '    .word $0000              ; BRK (native)',
+        '    .word $0000              ; ABORT (native)',
+        '    .word NMI_TRAMPOLINE     ; NMI (native)',
+        '    .word $0000              ; (unused in native mode)',
+        '    .word IRQ_TRAMPOLINE     ; IRQ (native)',
         '.org $00FFF4',
-        '    .word $0000         ; COP (emulation)',
-        '    .word $0000',
-        '    .word $0000         ; ABORT (emulation)',
-        '    .word NMI_HANDLER   ; NMI (emulation)',
-        '    .word RESET_HANDLER ; RESET — must be defined in translated code',
-        '    .word IRQ_HANDLER   ; IRQ/BRK (emulation)',
+        '    .word $0000              ; COP (emulation)',
+        '    .word $0000              ; (unused)',
+        '    .word $0000              ; ABORT (emulation)',
+        '    .word NMI_TRAMPOLINE     ; NMI (emulation)',
+        '    .word RESET_TRAMPOLINE   ; RESET',
+        '    .word IRQ_TRAMPOLINE     ; IRQ/BRK (emulation)',
         "",
-        "; Fallback stubs (overridden if translated code defines these labels)",
+        "; Fallback stubs — only assembled if translated code did not define the label.",
+        "; The trampolines above JML to these, so they must always be present.",
         ".ifndef NMI_HANDLER",
         "NMI_HANDLER:",
         "    RTI",
@@ -164,14 +172,11 @@ def generate_lorom_cfg(workspace: Path, bank_layout: dict) -> Path:
         seg = b["seg"]
         start = b["start"]
         size = b["size"]
-        # Compute file offset for LoROM: bank*$8000 + (addr - $8000)
-        bank_num = start >> 16
-        file_offset = bank_num * 0x8000 + (start & 0x7FFF)
         memory_lines.append(
             f"    {seg}: start = ${start:06X}, size = ${size:04X}, "
             f"fill = yes, fillval = $FF, file = %O;"
         )
-        seg_lines.append(f"    {seg}: load = {seg}, type = ro, offset = ${file_offset:06X};")
+        seg_lines.append(f"    {seg}: load = {seg}, type = ro;")
 
     memory_lines.append("}")
     seg_lines.append("}")
@@ -236,11 +241,11 @@ def assemble_rom(workspace: Path, manifest: dict, output_dir: Path) -> Path:
     obj_path = workspace / "master.o"
     sfc_path = output_dir / "output.sfc"
 
-    # Assemble
+    # Assemble — run from workspace so .include paths resolve correctly
     print("[build_snes_rom] Assembling with ca65 ...")
     result = subprocess.run(
-        [ca65, "--cpu", "65816", "-o", str(obj_path), str(master_asm)],
-        capture_output=True, text=True, cwd=str(workspace),
+        [ca65, "--cpu", "65816", "-o", str(obj_path.resolve()), str(master_asm.resolve())],
+        capture_output=True, text=True, cwd=str(workspace.resolve()),
     )
     if result.returncode != 0:
         print("[build_snes_rom] ca65 error:", file=sys.stderr)
@@ -250,8 +255,8 @@ def assemble_rom(workspace: Path, manifest: dict, output_dir: Path) -> Path:
     # Link
     print("[build_snes_rom] Linking with ld65 ...")
     result = subprocess.run(
-        [ld65, "-C", str(lorom_cfg), "-o", str(sfc_path), str(obj_path)],
-        capture_output=True, text=True, cwd=str(workspace),
+        [ld65, "-C", str(lorom_cfg.resolve()), "-o", str(sfc_path.resolve()), str(obj_path.resolve())],
+        capture_output=True, text=True, cwd=str(workspace.resolve()),
     )
     if result.returncode != 0:
         print("[build_snes_rom] ld65 error:", file=sys.stderr)
