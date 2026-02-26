@@ -121,7 +121,10 @@ def main():
     parser.add_argument("--upscale",       action="store_true",  help="Upscale CHR tiles via ComfyUI")
     parser.add_argument("--skip-audio",    action="store_true",  help="Skip audio conversion stage")
     parser.add_argument("--no-llm",        action="store_true",  help="Disable LLM translation pass")
-    parser.add_argument("--claude-model",  default="claude-sonnet-4-6", help="Claude model for LLM pass")
+    parser.add_argument("--backend",       default="anthropic", choices=["anthropic", "ollama"],
+                        help="LLM backend: anthropic or ollama (default: anthropic)")
+    parser.add_argument("--claude-model",  default="claude-sonnet-4-6",
+                        help="LLM model name (default: claude-sonnet-4-6)")
     parser.add_argument("--mapper-override", type=int, default=None, help="Override mapper detection")
     args = parser.parse_args()
 
@@ -145,7 +148,8 @@ def main():
         "parse_rom":         [str(rom_path)] + workspace_args,
         "disassemble":       workspace_args,
         "translate_cpu":     workspace_args + (["--no-llm"] if args.no_llm else []) +
-                             ["--model", args.claude_model],
+                             ["--model", args.claude_model] +
+                             ["--backend", args.backend],
         "translate_ppu":     workspace_args,
         "translate_mapper":  workspace_args,
         "convert_graphics":  workspace_args + (["--upscale"] if args.upscale else []),

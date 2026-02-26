@@ -27,6 +27,11 @@ try:
 except ImportError:
     anthropic = None
 
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None
+
 # ---------------------------------------------------------------------------
 # Hardware register → wrapper function mapping
 # Any STA/STX/STY to these addresses becomes a JSR to the wrapper
@@ -240,9 +245,57 @@ def build_llm_system_prompt() -> str:
     )
 
 
+def call_ollama(model: str, system_prompt: str, user_msg: str,
+                base_url: str = "http://localhost:11434") -> str:
+    """Call Ollama's local API and return the response text."""
+    if _requests is None:
+        raise RuntimeError("requests package not installed — pip install requests")
+    resp = _requests.post(
+        f"{base_url}/api/chat",
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            "stream": False,
+            "options": {"num_predict": 2048, "temperature": 0.2},
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()["message"]["content"]
+
+
+def validate_asm_snippet(asm_text: str, workspace: Path) -> bool:
+    """Quick check: can ca65 parse this snippet without errors?"""
+    import subprocess, tempfile
+    # Wrap in a minimal valid context
+    test_asm = '.setcpu "65816"\n.smart\n' + asm_text
+    tmp = workspace / "_validate_tmp.asm"
+    tmp_o = workspace / "_validate_tmp.o"
+    try:
+        tmp.write_text(test_asm)
+        result = subprocess.run(
+            ["ca65", "--cpu", "65816", "-o", str(tmp_o), str(tmp)],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp_o.unlink(missing_ok=True)
+
+
 def call_llm_translate(client, functions_batch: list[dict], rom_name: str,
-                       mapper_name: str, model: str) -> list[dict]:
-    """Send a batch of functions to Claude and return translated results."""
+                       mapper_name: str, model: str,
+                       backend: str = "anthropic",
+                       workspace: Path = None) -> list[dict]:
+    """Send a batch of functions to LLM and return translated results.
+
+    backend: "anthropic" for Claude API, "ollama" for local Ollama.
+    """
     results = []
     system_prompt = build_llm_system_prompt()
 
@@ -257,41 +310,56 @@ def call_llm_translate(client, functions_batch: list[dict], rom_name: str,
             f"Translate to 65816. Begin with label {func['name']}_65816:"
         )
 
+        review_count = 0
         try:
-            message = client.messages.create(
-                model=model,
-                max_tokens=2048,
-                messages=[{"role": "user", "content": user_msg}],
-                system=system_prompt,
-            )
-            translated = message.content[0].text
-            review_count = translated.count("; REVIEW:")
-            confidence = max(0.0, 1.0 - review_count * 0.1)
+            if backend == "ollama":
+                translated = call_ollama(model, system_prompt, user_msg)
+            else:
+                message = client.messages.create(
+                    model=model,
+                    max_tokens=2048,
+                    messages=[{"role": "user", "content": user_msg}],
+                    system=system_prompt,
+                )
+                translated = message.content[0].text
+            # Strip markdown code fences that local LLMs sometimes emit
+            translated = re.sub(r"```\w*\n?", "", translated).strip()
+            # Validate the output actually assembles
+            if workspace and not validate_asm_snippet(translated, workspace):
+                print(f"[translate_cpu]     {func['name']}: LLM output failed ca65 validation — using stub")
+                translated = None
+            else:
+                review_count = translated.count("; REVIEW:")
+                confidence = max(0.0, 1.0 - review_count * 0.1)
         except Exception as e:
+            translated = None
+            confidence = 0.0
+
+        if translated is None:
             stub_label = f"{func['name']}_65816"
             translated = (
-                f"; LLM translation failed for {func['name']}: {e}\n"
-                f".ifndef {stub_label}\n"
                 f"{stub_label}:\n"
                 f"    BRK\n"
-                f"    RTL\n"
-                f".endif\n"
+                f"    RTL"
             )
             confidence = 0.0
+
+        # Wrap in .ifndef guard to prevent duplicate definitions across banks
+        guard_label = f"{func['name']}_65816"
+        translated = f".ifndef {guard_label}\n{translated}\n.endif"
 
         results.append({
             "addr": func["addr_str"],
             "name": func["name"],
             "translated": translated,
             "confidence": round(confidence, 2),
-            "review_count": review_count if "review_count" in dir() else 0,
+            "review_count": review_count,
         })
-        time.sleep(0.1)  # basic rate limiting
 
     return results
 
 
-def translate_banks(workspace: Path, manifest: dict, model: str, use_llm: bool):
+def translate_banks(workspace: Path, manifest: dict, model: str, use_llm: bool, args=None):
     disasm_dir    = workspace / "disasm"
     translated_dir = workspace / "translated"
     translated_dir.mkdir(parents=True, exist_ok=True)
@@ -304,19 +372,33 @@ def translate_banks(workspace: Path, manifest: dict, model: str, use_llm: bool):
     functions_data = json.loads(functions_path.read_text()) if functions_path.exists() else {}
 
     client = None
+    backend = getattr(args, "backend", "anthropic") if hasattr(args, "backend") else "anthropic"
     if use_llm:
-        if anthropic is None:
-            print("[translate_cpu] WARNING: anthropic package not installed — skipping LLM pass",
-                  file=sys.stderr)
-            use_llm = False
+        if backend == "ollama":
+            # Verify Ollama is running
+            try:
+                if _requests is None:
+                    raise RuntimeError("requests package not installed")
+                r = _requests.get("http://localhost:11434/api/tags", timeout=5)
+                r.raise_for_status()
+                print(f"[translate_cpu] Using Ollama backend, model: {model}")
+            except Exception as e:
+                print(f"[translate_cpu] WARNING: Ollama not reachable ({e}) — skipping LLM pass",
+                      file=sys.stderr)
+                use_llm = False
         else:
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
-            if not api_key:
-                print("[translate_cpu] WARNING: ANTHROPIC_API_KEY not set — skipping LLM pass",
+            if anthropic is None:
+                print("[translate_cpu] WARNING: anthropic package not installed — skipping LLM pass",
                       file=sys.stderr)
                 use_llm = False
             else:
-                client = anthropic.Anthropic(api_key=api_key)
+                api_key = os.environ.get("ANTHROPIC_API_KEY")
+                if not api_key:
+                    print("[translate_cpu] WARNING: ANTHROPIC_API_KEY not set — skipping LLM pass",
+                          file=sys.stderr)
+                    use_llm = False
+                else:
+                    client = anthropic.Anthropic(api_key=api_key)
 
     translation_log = []
     bank_files = sorted(disasm_dir.glob("bank_*.asm"))
@@ -331,14 +413,14 @@ def translate_banks(workspace: Path, manifest: dict, model: str, use_llm: bool):
         transformed, llm_line_nums = preprocess_bank(asm_text, reset_vec, global_skip_counter)
 
         # Pass 2: LLM for flagged functions (NMI, IRQ, and complex cases)
-        if use_llm and client and functions_data:
+        if use_llm and (client or backend == "ollama") and functions_data:
             funcs_to_translate = []
             for addr_str, info in functions_data.items():
                 addr = int(addr_str, 16)
                 # Always send interrupt handlers to LLM; also send flagged functions
                 is_interrupt = addr in (nmi_vec, irq_vec)
                 if is_interrupt or llm_line_nums:
-                    model_choice = "claude-opus-4-6" if is_interrupt else model
+                    model_choice = model  # use the configured model for all
                     funcs_to_translate.append({
                         **info,
                         "addr_str": addr_str,
@@ -347,12 +429,14 @@ def translate_banks(workspace: Path, manifest: dict, model: str, use_llm: bool):
                     })
 
             if funcs_to_translate:
-                print(f"[translate_cpu]   LLM pass: {len(funcs_to_translate)} function(s)")
+                print(f"[translate_cpu]   LLM pass: {len(funcs_to_translate)} function(s) via {backend}")
                 results = call_llm_translate(
                     client, funcs_to_translate,
                     manifest.get("source_rom", "unknown"),
                     manifest.get("mapper_name", "unknown"),
                     model,
+                    backend=backend,
+                    workspace=workspace,
                 )
                 translation_log.extend(results)
                 # Append LLM translations as comments/overrides at the end of the bank file
@@ -377,7 +461,9 @@ def main():
     parser = argparse.ArgumentParser(description="Translate 6502 ASM to 65816 ASM")
     parser.add_argument("--workspace", default="workspace")
     parser.add_argument("--model", default="claude-sonnet-4-6",
-                        help="Claude model for LLM pass (default: claude-sonnet-4-6)")
+                        help="LLM model name (default: claude-sonnet-4-6)")
+    parser.add_argument("--backend", default="anthropic", choices=["anthropic", "ollama"],
+                        help="LLM backend: anthropic (Claude API) or ollama (local)")
     parser.add_argument("--no-llm", action="store_true",
                         help="Skip LLM pass (deterministic pre-processing only)")
     args = parser.parse_args()
@@ -391,8 +477,11 @@ def main():
     manifest = json.loads(manifest_path.read_text())
     use_llm = not args.no_llm
 
-    print(f"[translate_cpu] LLM pass: {'enabled (' + args.model + ')' if use_llm else 'disabled'}")
-    translate_banks(workspace, manifest, args.model, use_llm)
+    backend = args.backend
+    if backend == "ollama" and args.model.startswith("claude"):
+        args.model = "qwen2.5-coder:7b"  # default Ollama model for code
+    print(f"[translate_cpu] LLM: {'enabled (' + backend + '/' + args.model + ')' if use_llm else 'disabled'}")
+    translate_banks(workspace, manifest, args.model, use_llm, args)
 
 
 if __name__ == "__main__":
