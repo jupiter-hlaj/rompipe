@@ -66,7 +66,7 @@ SCR_LATCH:      .res 1   ; 0=X scroll next, 1=Y scroll next
 SCROLL_X:       .res 1   ; latched horizontal scroll
 TM_SHADOW:      .res 1   ; main screen designation shadow
 
-.segment "CODE"
+.segment "BANK00"
 
 ; -----------------------------------------------------------------------------
 ; PPU_CTRL_WRITE  ($2000)
@@ -275,7 +275,7 @@ PPU_INIT_ASM = """\
 .setcpu "65816"
 .smart
 
-.segment "CODE"
+.segment "BANK00"
 
 .proc SNES_PPU_INIT
     ; Force blank during init

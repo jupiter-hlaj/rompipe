@@ -19,7 +19,7 @@ NROM_ASM = """\
 ; No bank switching — PRG is fixed. No stubs required.
 ; =============================================================================
 .setcpu "65816"
-.segment "CODE"
+.segment "BANK00"
 ; NROM: all PRG banks fixed in LoROM layout. No mapper write handler needed.
 MAPPER_INIT:
     RTS
@@ -38,7 +38,7 @@ MMC1_SHIFT_CNT:  .res 1   ; count of bits loaded (0–4)
 MMC1_CONTROL:    .res 1   ; shadow of MMC1 control register
 MMC1_PRG_BANK:   .res 1   ; current PRG bank selection
 
-.segment "CODE"
+.segment "BANK00"
 
 MAPPER_INIT:
     STZ MMC1_SHIFT
@@ -97,7 +97,7 @@ UNROM_ASM = """\
 .segment "ZEROPAGE"
 UNROM_PRG_BANK: .res 1   ; current switchable bank (maps to $8000–$BFFF)
 
-.segment "CODE"
+.segment "BANK00"
 MAPPER_INIT:
     STZ UNROM_PRG_BANK
     RTS
@@ -121,7 +121,7 @@ CNROM_ASM = """\
 .segment "ZEROPAGE"
 CNROM_CHR_BANK: .res 1   ; current CHR bank selection
 
-.segment "CODE"
+.segment "BANK00"
 MAPPER_INIT:
     STZ CNROM_CHR_BANK
     RTS
@@ -161,7 +161,7 @@ MMC3_IRQ_LATCH: .res 1   ; IRQ counter latch value
 MMC3_IRQ_CNTLO: .res 1   ; IRQ counter low
 MMC3_IRQ_EN:    .res 1   ; IRQ enabled flag
 
-.segment "CODE"
+.segment "BANK00"
 MAPPER_INIT:
     STZ MMC3_REG_SEL
     LDX #7
@@ -219,7 +219,7 @@ UNSUPPORTED_ASM = """\
 ; Refer to build_report.json for details.
 ; =============================================================================
 .setcpu "65816"
-.segment "CODE"
+.segment "BANK00"
 MAPPER_INIT:
     BRK                 ; halt — unsupported mapper
     RTS

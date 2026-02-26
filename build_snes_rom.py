@@ -84,9 +84,11 @@ def generate_master_asm(workspace: Path, bank_layout: dict) -> Path:
         ]
 
     # Audio stub (placeholder — SPC700 code assembled separately)
+    audio_bank_int = int(bank_layout.get("audio_bank", "0x1E"), 16)
+    audio_seg = f"BANK{audio_bank_int:02X}"
     lines += [
         '; SPC700 audio driver stub',
-        '.segment "BANK1E"',
+        f'.segment "{audio_seg}"',
         '    .res 512, $00',
         "",
     ]
@@ -166,7 +168,10 @@ def generate_lorom_cfg(workspace: Path, bank_layout: dict) -> Path:
     })
 
     memory_lines = ["MEMORY {"]
+    # ZEROPAGE maps to SNES Direct Page (WRAM at $0000–$00FF, not in ROM file)
+    memory_lines.append("    ZEROPAGE: start = $0000, size = $0100, type = rw, define = yes;")
     seg_lines    = ["SEGMENTS {"]
+    seg_lines.append("    ZEROPAGE: load = ZEROPAGE, type = zp;")
 
     for b in all_banks:
         seg = b["seg"]
