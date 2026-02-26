@@ -1,11 +1,12 @@
 # rompipe
 
-**rompipe** is a fully automated NES → SNES ROM port pipeline for Apple Silicon macOS. Feed it any `.nes` file and it produces a playable `.sfc` SNES ROM — with enhanced 16-bit color graphics and stereo SPC700 audio — entirely via local CLI tools and the Claude API.
+**rompipe** is a fully automated NES → SNES ROM port pipeline for Apple Silicon macOS. Feed it any `.nes` file and it produces a playable `.sfc` SNES ROM — with enhanced 16-bit color graphics and stereo SPC700 audio — entirely via local CLI tools and LLM-assisted code translation.
 
 ## 🎮 Features
 
 - **Full Port, Not Emulation** — Translates 6502 machine code to 65816 ASM; does not wrap a NES emulator
-- **LLM-Assisted Translation** — Uses Claude API to handle complex cases: NMI handlers, self-modifying code, indirect jumps, mapper IRQ logic
+- **LLM-Assisted Translation** — Uses Claude API or **local Ollama** to handle complex cases: NMI handlers, self-modifying code, indirect jumps, mapper IRQ logic
+- **Ghidra-Powered Disassembly** — Per-bank headless analysis with function boundary detection, call graph extraction, and hardware register access mapping
 - **Enhanced Output** — SNES 4bpp color (vs NES 2bpp), stereo SPC700 audio (vs mono APU)
 - **79% Mapper Coverage** — NROM, MMC1, UNROM, CNROM, MMC3; graceful diagnostic output for unsupported mappers
 - **Apple Silicon Native** — All tooling (cc65, Ghidra, Python packages) runs ARM64 natively; no Rosetta
@@ -18,8 +19,8 @@
 ```mermaid
 flowchart TD
     A[input.nes] --> B[parse_rom.py\niNES header decode\nPRG/CHR extraction]
-    B --> C[disassemble.py\nGhidra headless\ncapstone fallback]
-    C --> D[translate_cpu.py\nDeterministic pre-processor\nClaude API hard cases]
+    B --> C[disassemble.py\nGhidra headless per-bank\nJython NESAnalyzer script]
+    C --> D[translate_cpu.py\nDeterministic pre-processor\nLLM hard cases via Claude/Ollama]
     D --> E1[translate_ppu.py\nNES PPU → SNES PPU\nwrapper subroutines]
     D --> E2[translate_mapper.py\nLoROM bank layout\nmapper stubs]
     E1 --> F[convert_graphics.py\n2bpp → 4bpp tiles\nNES palette → 15-bit BGR]
@@ -36,12 +37,12 @@ flowchart TD
 | # | Script | Input | Output | Key Technology |
 |---|--------|-------|--------|----------------|
 | 1 | `parse_rom.py` | `.nes` file | `rom_manifest.json`, `prg_rom.bin`, `chr_rom.bin` | Python `struct` |
-| 2 | `disassemble.py` | `prg_rom.bin` | `disasm/bank_NN.asm`, `functions.json`, `register_accesses.json` | Ghidra headless / `capstone` |
-| 3 | `translate_cpu.py` | `disasm/*.asm` | `translated/bank_NN_65816.asm`, `translation_log.json` | Deterministic pre-processor + Claude API |
+| 2 | `disassemble.py` | `prg_rom.bin` | `disasm/bank_NN.asm`, `functions.json`, `register_accesses.json` | Ghidra headless (Jython) / pure-Python fallback |
+| 3 | `translate_cpu.py` | `disasm/*.asm` | `translated/bank_NN_65816.asm`, `translation_log.json` | Deterministic pre-processor + Claude API / Ollama |
 | 4 | `translate_ppu.py` | `rom_manifest.json` | `ppu_wrappers.asm`, `ppu_init.asm` | Code generation (register mapping table) |
 | 5 | `translate_mapper.py` | `rom_manifest.json` | `mapper_stubs.asm`, `bank_layout.json` | Per-mapper stub generators |
 | 6 | `convert_graphics.py` | `chr_rom.bin` | `chr_snes.bin`, `palette_snes.bin`, `tile_NNNN_nes.png` | Pillow, NumPy |
-| 7 | `convert_audio.py` | `prg_rom.bin`, `disasm/` | `spc_driver.asm`, `brr_samples/*.brr` | NumPy, SciPy, Claude API |
+| 7 | `convert_audio.py` | `prg_rom.bin`, `disasm/` | `spc_driver.asm`, `brr_samples/*.brr` | NumPy, SciPy |
 | 8 | `build_snes_rom.py` | All workspace files | `output/output.sfc` | ca65, ld65 (cc65 toolchain) |
 
 ---
@@ -69,26 +70,52 @@ Unsupported mappers produce a diagnostic `.sfc` stub and report in `build_report
 # Assembler/linker — ARM64 native
 brew install cc65
 
-# Disassembler — ARM64 JVM
+# Java 21 (required for Ghidra — NOT Java 25+)
+brew install openjdk@21
+
+# Ghidra disassembler
 brew install --cask ghidra
+# If Ghidra is not available via cask, download from GitHub:
+# https://github.com/NationalSecurityAgency/ghidra/releases
+# Extract to /opt/homebrew/share/ghidra_11.3.2_PUBLIC/
 
 # Python dependencies
 pip3 install -r requirements.txt
-
-# API key
-cp .env.example .env
-# Edit .env — set ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### 2. Run the pipeline
+### 2. Choose your LLM backend
+
+**Option A: Claude API (best quality, requires API key)**
+```bash
+cp .env.example .env
+# Edit .env — set ANTHROPIC_API_KEY=sk-ant-...
+python3 main.py your_game.nes
+```
+
+**Option B: Local Ollama (free, no API key needed)**
+```bash
+# Install Ollama if not already installed
+brew install ollama
+ollama pull qwen2.5-coder:7b
+
+# Run with local LLM
+python3 main.py your_game.nes --backend ollama
+```
+
+**Option C: No LLM (deterministic translation only)**
+```bash
+python3 main.py your_game.nes --no-llm
+```
+
+### 3. Run the pipeline
 
 ```bash
-python3 main.py your_game.nes
+python3 main.py your_game.nes --backend ollama
 ```
 
 Output will be at `output/output.sfc`. Open in any SNES emulator (Snes9x, bsnes, RetroArch).
 
-### 3. Optional: AI upscaled sprites
+### 4. Optional: AI upscaled sprites
 
 Requires ComfyUI running locally on port 8188 with an SDXL checkpoint and ControlNet Tile model.
 
@@ -112,10 +139,11 @@ python3 main.py <input.nes> [options]
 Options:
   --workspace DIR      Working directory (default: workspace/)
   --output DIR         Output directory (default: output/)
+  --backend BACKEND    LLM backend: anthropic or ollama (default: anthropic)
   --upscale            Upscale CHR tiles via ComfyUI (requires port 8188)
   --skip-audio         Skip audio conversion (produces silent ROM)
-  --no-llm             Disable Claude API pass (faster, lower fidelity)
-  --claude-model MODEL Claude model for LLM pass (default: claude-sonnet-4-6)
+  --no-llm             Disable LLM pass (faster, deterministic only)
+  --claude-model MODEL LLM model name (default: claude-sonnet-4-6 / qwen2.5-coder:7b)
   --mapper-override N  Override mapper auto-detection
 ```
 
@@ -124,7 +152,7 @@ Individual stages can also be run in isolation (useful for debugging):
 ```bash
 python3 parse_rom.py game.nes
 python3 disassemble.py
-python3 translate_cpu.py --no-llm
+python3 translate_cpu.py --backend ollama
 python3 build_snes_rom.py
 ```
 
@@ -145,10 +173,12 @@ rompipe/
 ├── build_snes_rom.py          # Stage 8: ca65/ld65 ROM assembly
 ├── requirements.txt           # Python dependencies
 ├── scripts/
-│   ├── NESAnalyzer.java       # Ghidra headless post-analysis script
+│   ├── NESAnalyzer.py         # Ghidra headless Jython script
+│   ├── NESAnalyzer.java       # Ghidra Java script (legacy, OSGi issues)
 │   └── lorom.cfg              # ld65 LoROM linker config template
 ├── .env.example               # API key template
-└── CLAUDE.md                  # AI assistant instructions
+├── CLAUDE.md                  # AI assistant instructions
+└── README.md
 ```
 
 Runtime directories (auto-created, git-ignored):
@@ -181,22 +211,62 @@ Every run produces `output/build_report.json`:
   "mapper": { "id": 1, "name": "MMC1 (SxROM)", "supported": true },
   "output_rom": "output/output.sfc",
   "stages": [
-    { "stage": "parse_rom",        "success": true,  "elapsed_seconds": 0.12 },
-    { "stage": "disassemble",      "success": true,  "elapsed_seconds": 47.3 },
-    { "stage": "translate_cpu",    "success": true,  "elapsed_seconds": 312.1 },
-    { "stage": "translate_ppu",    "success": true,  "elapsed_seconds": 0.8  },
-    { "stage": "translate_mapper", "success": true,  "elapsed_seconds": 0.4  },
-    { "stage": "convert_graphics", "success": true,  "elapsed_seconds": 2.1  },
-    { "stage": "convert_audio",    "success": true,  "elapsed_seconds": 14.6 },
-    { "stage": "build_snes_rom",   "success": true,  "elapsed_seconds": 3.2  }
+    { "stage": "parse_rom",        "success": true,  "elapsed_seconds": 0.04 },
+    { "stage": "disassemble",      "success": true,  "elapsed_seconds": 31.6 },
+    { "stage": "translate_cpu",    "success": true,  "elapsed_seconds": 171.7 },
+    { "stage": "translate_ppu",    "success": true,  "elapsed_seconds": 0.07 },
+    { "stage": "translate_mapper", "success": true,  "elapsed_seconds": 0.03 },
+    { "stage": "convert_graphics", "success": true,  "elapsed_seconds": 0.06 },
+    { "stage": "convert_audio",    "success": true,  "elapsed_seconds": 0.08 },
+    { "stage": "build_snes_rom",   "success": true,  "elapsed_seconds": 0.05 }
   ],
   "warnings": [],
   "fidelity_estimate": "HIGH",
-  "total_elapsed_seconds": 380.7
+  "total_elapsed_seconds": 203.6
 }
 ```
 
 `fidelity_estimate` values: `HIGH` · `PARTIAL` · `DEGRADED` · `TRANSLATION_FAILED` · `BUILD_FAILED` · `UNSUPPORTED_MAPPER`
+
+---
+
+## 🔬 Technical Details
+
+### Disassembly (Ghidra Integration)
+
+Each 16KB NES PRG bank is loaded into Ghidra separately at the correct CPU address:
+- **Switchable banks** (0 to N-1): loaded at `$8000`
+- **Fixed last bank**: loaded at `$C000`
+
+The `NESAnalyzer.py` Jython script runs as a Ghidra post-analysis hook and exports:
+- Function boundaries with caller/callee relationships
+- Per-function source assembly (used as LLM context)
+- All NES hardware register access sites (`$2000`-`$4017`)
+- Per-bank `.asm` disassembly listings with function labels
+
+**Note:** Ghidra 11.x requires **Java 21 LTS**. Homebrew's default `openjdk` (Java 25) causes OSGi class loader failures. Install `openjdk@21` explicitly.
+
+### CPU Translation (6502 → 65816)
+
+**Pass 1 — Deterministic pre-processor:**
+- Normalizes Ghidra `0x` hex notation to ca65 `$` prefix
+- Expands all conditional branches to inverted-branch + JMP (avoids ±127 range limit)
+- Replaces NES hardware register reads/writes with `JSR` wrapper calls
+- Injects 65816 init preamble at RESET handler: `CLC; XCE` (native mode), stack setup, Direct Page = `$0000`
+
+**Pass 2 — LLM translation (Claude API or Ollama):**
+- Each Ghidra-identified function is sent individually with full source ASM context
+- LLM output is validated with `ca65 --cpu 65816` before inclusion
+- Failed validations fall back to `BRK` stub (safe crash vs silent corruption)
+- All translations wrapped in `.ifndef` guards to prevent duplicate symbols across banks
+
+### SNES ROM Format
+
+- **LoROM** layout: 32KB banks at `$XX8000`-`$XXFFFF`
+- Internal header at file offset `$7FC0` (21-byte title, map mode, ROM size)
+- Checksum at `$7FDC`-`$7FDF`: complement field set to `$FFFF`, checksum to `$0000` before summing
+- ROM padded to next power-of-2 size
+- Native + emulation mode interrupt vectors at `$FFE0`-`$FFFF` within BANK00
 
 ---
 
@@ -205,8 +275,9 @@ Every run produces `output/build_report.json`:
 - **Mapper coverage**: ~21% of NES titles use unsupported mappers and will produce non-booting stubs
 - **Timing accuracy**: NES games use cycle-exact PPU timing. SNES timing differs; raster effects (mid-scanline palette swaps, sprite multiplexing tricks) may render incorrectly
 - **Self-modifying code**: Flagged and sent to LLM but may not translate perfectly; check `translation_log.json` for `; REVIEW:` annotations
-- **CHR-RAM games**: Games with no CHR-ROM (e.g., some MMC1 titles) skip the graphics conversion step
+- **CHR-RAM games**: Games with no CHR-ROM (e.g., some MMC1 titles like Zelda 1) skip the graphics conversion step
 - **Audio fidelity**: SPC700 BRR synthesis approximates NES APU channels — it will sound similar but not identical
+- **Local LLM quality**: `qwen2.5-coder:7b` via Ollama has a high failure rate on assembly translation. Larger models (14B+) or Claude API produce significantly better results
 
 ---
 
