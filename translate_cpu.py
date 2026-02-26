@@ -113,12 +113,29 @@ RESET_PREAMBLE_65816 = """\
 """
 
 
+def normalize_ghidra_line(line: str) -> str:
+    """Normalize Ghidra's disassembly format to ca65-compatible syntax.
+
+    - Convert 0x hex prefix to $ prefix: `0xFF` -> `$FF`, `#0x0` -> `#$00`
+    - Strip `<UNSUPPORTED>` tags from implied-mode instructions
+    """
+    # Strip <UNSUPPORTED> (Ghidra emits this for implied-mode operands)
+    line = line.replace("<UNSUPPORTED>", "").rstrip()
+    # Convert 0xNN hex literals to $NN (handles #0x and plain 0x)
+    line = re.sub(r'#0x([0-9A-Fa-f]+)', lambda m: '#$' + m.group(1).upper().zfill(2), line)
+    line = re.sub(r'(?<![#\w])0x([0-9A-Fa-f]+)', lambda m: '$' + m.group(1).upper().zfill(2), line)
+    return line
+
+
 def preprocess_line(line: str, reset_vec: int, skip_counter: list) -> tuple[str, bool]:
     """
     Deterministic pre-processor: applies mechanical substitutions to one line.
     Returns (transformed_line, needs_llm).
     skip_counter is a single-element list [int] used to generate unique branch skip labels.
     """
+    # Normalize Ghidra output format first
+    line = normalize_ghidra_line(line)
+
     stripped = line.strip()
     if not stripped or stripped.startswith(";"):
         return line, False
@@ -424,7 +441,7 @@ def translate_banks(workspace: Path, manifest: dict, model: str, use_llm: bool, 
                     funcs_to_translate.append({
                         **info,
                         "addr_str": addr_str,
-                        "source_asm": f"; {info.get('name', addr_str)} — LLM pass",
+                        "source_asm": info.get("source_asm", f"; {info.get('name', addr_str)} - no source"),
                         "_model": model_choice,
                     })
 
