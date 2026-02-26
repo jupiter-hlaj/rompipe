@@ -280,6 +280,8 @@ def assemble_rom(workspace: Path, manifest: dict, output_dir: Path) -> Path:
         print(f"[build_snes_rom] Embedded {len(chr_data)} bytes of CHR data")
 
     write_snes_header(rom_data, manifest)
+    # Zero checksum fields before summing so those bytes don't corrupt the result
+    struct.pack_into("<HH", rom_data, SNES_CHECKSUM_OFFSET, 0x0000, 0x0000)
     checksum, complement = compute_checksum(rom_data)
     struct.pack_into("<HH", rom_data, SNES_CHECKSUM_OFFSET, complement, checksum)
 
