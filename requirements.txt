@@ -1,0 +1,32 @@
+# NES → SNES ROM Port Pipeline — Python dependencies
+# Install: pip3 install -r requirements.txt
+# Tested on Apple Silicon (M4, arm64) with Python 3.11+
+
+# Claude API — LLM-assisted CPU translation and music engine identification
+anthropic>=0.40.0
+
+# Environment variable loading (.env file support)
+python-dotenv>=1.0.0
+
+# 6502 disassembly fallback (used when Ghidra is unavailable)
+# ARM64 wheels available for Apple Silicon
+capstone>=5.0.1
+
+# Image I/O for CHR tile PNG export and optional ComfyUI upscale
+Pillow>=10.0.0
+
+# BRR sample synthesis and DMC PCM decoding
+# ARM64 optimized wheels (uses BLAS/LAPACK via Accelerate framework on macOS)
+numpy>=1.26.0
+
+# DMC PCM resampling
+scipy>=1.11.0
+
+# Binary format parsing (iNES header)
+construct>=2.10.0
+
+# Progress bars for batch tile/audio operations
+tqdm>=4.66.0
+
+# Colored terminal logging
+colorlog>=6.8.0

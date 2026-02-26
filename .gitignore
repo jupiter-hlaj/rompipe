@@ -1,0 +1,33 @@
+# Pipeline working directories
+workspace/
+output/
+
+# Compiled/assembled objects
+*.o
+*.sfc
+*.smc
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment
+.env
+
+# macOS
+.DS_Store
+
+# Ghidra projects
+*.rep
+*.gpr
+
+# NES ROMs (do not commit copyrighted material)
+*.nes
+
+# Audio intermediates
+*.brr
