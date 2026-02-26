@@ -499,7 +499,7 @@ def main():
 
     backend = args.backend
     if backend == "ollama" and args.model.startswith("claude"):
-        args.model = "qwen2.5-coder:7b"  # default Ollama model for code
+        args.model = "qwen3:8b"  # default Ollama model (best available locally)
     print(f"[translate_cpu] LLM: {'enabled (' + backend + '/' + args.model + ')' if use_llm else 'disabled'}")
     translate_banks(workspace, manifest, args.model, use_llm, args)
 

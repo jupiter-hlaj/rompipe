@@ -148,7 +148,7 @@ def main():
         "parse_rom":         [str(rom_path)] + workspace_args,
         "disassemble":       workspace_args,
         "translate_cpu":     workspace_args + (["--no-llm"] if args.no_llm else []) +
-                             ["--model", args.claude_model] +
+                             ["--model", args.claude_model if args.backend != "ollama" else "qwen3:8b"] +
                              ["--backend", args.backend],
         "translate_ppu":     workspace_args,
         "translate_mapper":  workspace_args,
