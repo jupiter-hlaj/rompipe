@@ -268,7 +268,15 @@ def call_llm_translate(client, functions_batch: list[dict], rom_name: str,
             review_count = translated.count("; REVIEW:")
             confidence = max(0.0, 1.0 - review_count * 0.1)
         except Exception as e:
-            translated = f"; LLM translation failed for {func['name']}: {e}\n{func['name']}_65816:\n    BRK\n    RTL\n"
+            stub_label = f"{func['name']}_65816"
+            translated = (
+                f"; LLM translation failed for {func['name']}: {e}\n"
+                f".ifndef {stub_label}\n"
+                f"{stub_label}:\n"
+                f"    BRK\n"
+                f"    RTL\n"
+                f".endif\n"
+            )
             confidence = 0.0
 
         results.append({

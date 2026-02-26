@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-SNES_HEADER_OFFSET_LOROM = 0x7FB0   # LoROM: header at bank $00, file offset $7FB0
+SNES_HEADER_OFFSET_LOROM = 0x7FC0   # LoROM: internal header title starts at $7FC0
 SNES_CHECKSUM_OFFSET     = 0x7FDC   # complement ($7FDC–$7FDD), checksum ($7FDE–$7FDF)
 
 # SNES ROM type codes (FFCC)
@@ -193,7 +193,20 @@ def generate_lorom_cfg(workspace: Path, bank_layout: dict) -> Path:
 
 
 def write_snes_header(rom_data: bytearray, manifest: dict):
-    """Write LoROM SNES internal header at file offset $7FB0."""
+    """Write LoROM SNES internal header.
+
+    Standard LoROM internal header layout (all offsets from $7FC0):
+      $7FC0–$7FD4  21-byte game title (ASCII, space-padded)
+      $7FD5        Map mode  (0x20 = LoROM, 0x30 = FastROM LoROM)
+      $7FD6        Cartridge type
+      $7FD7        ROM size  (1<<N KB)
+      $7FD8        SRAM size (1<<N KB, 0 = none)
+      $7FD9        Country / video standard
+      $7FDA        Developer ID
+      $7FDB        Version
+      $7FDC–$7FDD  Checksum complement  (written separately)
+      $7FDE–$7FDF  Checksum             (written separately)
+    """
     title = Path(manifest.get("source_rom", "NESPORT")).stem.upper()[:21]
     title_bytes = title.encode("ascii", errors="replace").ljust(21, b" ")
 
@@ -207,26 +220,20 @@ def write_snes_header(rom_data: bytearray, manifest: dict):
     battery = manifest.get("battery_backed", False)
     rom_type = ROM_TYPE_ROM_SRAM if battery else ROM_TYPE_ROM_ONLY
 
-    # Ensure rom_data is large enough
-    needed = SNES_HEADER_OFFSET_LOROM + 0x50
+    # Ensure rom_data is large enough to hold the header
+    needed = SNES_HEADER_OFFSET_LOROM + 0x40
     if len(rom_data) < needed:
         rom_data.extend(b"\xFF" * (needed - len(rom_data)))
 
-    o = SNES_HEADER_OFFSET_LOROM
-    rom_data[o: o + 2] = b"NN"           # maker code
-    rom_data[o + 2: o + 6] = b"PORT"     # game code
-    rom_data[o + 6: o + 9] = b"\x00" * 3
-    rom_data[o + 9]  = 0x00              # expansion RAM size
-    rom_data[o + 10] = 0x00              # special version
-    rom_data[o + 11] = 0x00              # cart sub-type
-    rom_data[o + 12: o + 33] = title_bytes  # 21-byte title
-    rom_data[o + 33] = 0x20              # ROM makeup: LoROM, FastROM
-    rom_data[o + 34] = rom_type          # ROM type
-    rom_data[o + 35] = rom_size_code     # ROM size
-    rom_data[o + 36] = 0x00              # SRAM size
-    rom_data[o + 37] = COUNTRY_NTSC      # country
-    rom_data[o + 38] = 0x33              # developer ID ($33 = extended header)
-    rom_data[o + 39] = 0x00              # version
+    o = SNES_HEADER_OFFSET_LOROM          # $7FC0
+    rom_data[o:     o + 21] = title_bytes  # $7FC0–$7FD4: title
+    rom_data[o + 21] = 0x20               # $7FD5: map mode (LoROM)
+    rom_data[o + 22] = rom_type           # $7FD6: cartridge type
+    rom_data[o + 23] = rom_size_code      # $7FD7: ROM size code
+    rom_data[o + 24] = 0x00               # $7FD8: SRAM size (none)
+    rom_data[o + 25] = COUNTRY_NTSC       # $7FD9: country
+    rom_data[o + 26] = 0x00               # $7FDA: developer ID
+    rom_data[o + 27] = 0x00               # $7FDB: version
 
 
 def compute_checksum(rom_data: bytes) -> tuple[int, int]:
