@@ -125,12 +125,25 @@ public class NESAnalyzer extends GhidraScript {
                 callees.add("0x" + callee.getEntryPoint().toString().toUpperCase());
             }
 
+            // Collect source ASM for this function
+            StringBuilder srcAsm = new StringBuilder();
+            AddressSetView body = func.getBody();
+            InstructionIterator funcInstrs = listing.getInstructions(body, true);
+            while (funcInstrs.hasNext()) {
+                Instruction fi = funcInstrs.next();
+                srcAsm.append(String.format("$%04X:  %-6s %s\n",
+                    fi.getAddress().getOffset(),
+                    fi.getMnemonicString(),
+                    fi.getDefaultOperandRepresentation(0)));
+            }
+
             Map<String, Object> info = new LinkedHashMap<>();
-            info.put("name",    func.getName());
-            info.put("start",   addrStr);
-            info.put("end",     "0x" + func.getBody().getMaxAddress().toString().toUpperCase());
-            info.put("callers", callers);
-            info.put("callees", callees);
+            info.put("name",       func.getName());
+            info.put("start",      addrStr);
+            info.put("end",        "0x" + func.getBody().getMaxAddress().toString().toUpperCase());
+            info.put("callers",    callers);
+            info.put("callees",    callees);
+            info.put("source_asm", srcAsm.toString());
             functions.put(addrStr, info);
         }
 
@@ -177,8 +190,7 @@ public class NESAnalyzer extends GhidraScript {
             long bankStart = baseAddr + (long) bankIdx * bankSz16kb;
             long bankEnd   = bankStart + bankSz16kb;
             StringBuilder sb = new StringBuilder();
-            sb.append(String.format("; NES PRG Bank %02d — $%04X–$%04X\n", bankIdx, bankStart, bankEnd - 1));
-            sb.append(String.format(".org $%04X\n\n", bankStart));
+            sb.append(String.format("; NES PRG Bank %02d — $%04X–$%04X\n\n", bankIdx, bankStart, bankEnd - 1));
 
             Address startA = af.getAddress(String.format("0x%04X", bankStart));
             Address endA   = af.getAddress(String.format("0x%04X", bankEnd - 1));

@@ -36,6 +36,7 @@ def find_ghidra() -> Path | None:
     candidates = [
         Path("/Applications/ghidra"),
         Path("/opt/homebrew/Caskroom/ghidra"),
+        Path("/opt/homebrew/share"),   # manual extract location
     ]
     # Check Homebrew cask install path
     try:
@@ -91,18 +92,23 @@ def disassemble_with_ghidra(
         env["NES_NMI"]   = nmi_addr
         env["NES_IRQ"]   = irq_addr
         env["NES_DISASM_OUT"] = str(disasm_dir)
+        # Ensure Java is found (Homebrew OpenJDK)
+        jdk_path = Path("/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home")
+        if jdk_path.exists():
+            env["JAVA_HOME"] = str(jdk_path)
+            env["PATH"] = f"/opt/homebrew/opt/openjdk/bin:{env.get('PATH', '')}"
 
         cmd = [
             str(ghidra),
             str(project_dir),
             "NESProject",
             "-import", str(prg_bin),
+            "-processor", "6502:LE:16:default",
             "-loader", "BinaryLoader",
             "-loader-baseAddr", "0x8000",
             "-postScript", str(java_script),
             "-scriptPath", str(scripts_dir),
             "-deleteProject",
-            "-noanalysis",
         ]
 
         print(f"[disassemble] Running Ghidra headless...")
