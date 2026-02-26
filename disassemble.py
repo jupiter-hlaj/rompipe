@@ -62,64 +62,134 @@ def find_ghidra() -> Path | None:
     return None
 
 
+def _ghidra_env() -> dict:
+    """Build environment with JAVA_HOME set for Homebrew OpenJDK 21 (Ghidra compatible)."""
+    env = os.environ.copy()
+    # Ghidra 11.x requires Java 21 LTS — NOT Java 25
+    jdk_path = Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home")
+    if jdk_path.exists():
+        env["JAVA_HOME"] = str(jdk_path)
+        env["PATH"] = f"/opt/homebrew/opt/openjdk@21/bin:{env.get('PATH', '')}"
+    return env
+
+
 def disassemble_with_ghidra(
     prg_bin: Path, manifest: dict, workspace: Path, scripts_dir: Path
 ) -> bool:
-    """Run Ghidra headless analysis. Returns True on success."""
+    """Run Ghidra headless analysis per-bank. Returns True on success.
+
+    NES PRG-ROM is split into 16KB banks. Each bank is loaded at the correct
+    NES CPU address: switchable banks at $8000, fixed last bank at $C000.
+    This ensures Ghidra's analysis and cross-references work correctly.
+    """
     ghidra = find_ghidra()
     if not ghidra:
         print("[disassemble] Ghidra not found — using capstone fallback", file=sys.stderr)
         return False
 
-    java_script = scripts_dir / "NESAnalyzer.java"
-    if not java_script.exists():
-        print("[disassemble] NESAnalyzer.java not found in scripts/ — using capstone fallback",
+    ghidra_script = scripts_dir / "NESAnalyzer.py"
+    if not ghidra_script.exists():
+        print("[disassemble] NESAnalyzer.py not found in scripts/ — using capstone fallback",
               file=sys.stderr)
         return False
 
     disasm_dir = workspace / "disasm"
     disasm_dir.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_dir = Path(tmpdir)
-        vectors = manifest.get("interrupt_vectors", {})
-        reset_addr = vectors.get("RESET", "0xFFFC").replace("0x", "")
-        nmi_addr   = vectors.get("NMI",   "0xFFFA").replace("0x", "")
-        irq_addr   = vectors.get("IRQ",   "0xFFFE").replace("0x", "")
+    prg_data = prg_bin.read_bytes()
+    bank_size = 0x4000  # 16KB
+    num_banks = len(prg_data) // bank_size
+    if num_banks == 0:
+        print("[disassemble] PRG too small for Ghidra — using capstone fallback", file=sys.stderr)
+        return False
 
-        env = os.environ.copy()
-        env["NES_RESET"] = reset_addr
-        env["NES_NMI"]   = nmi_addr
-        env["NES_IRQ"]   = irq_addr
-        env["NES_DISASM_OUT"] = str(disasm_dir)
-        # Ensure Java is found (Homebrew OpenJDK)
-        jdk_path = Path("/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home")
-        if jdk_path.exists():
-            env["JAVA_HOME"] = str(jdk_path)
-            env["PATH"] = f"/opt/homebrew/opt/openjdk/bin:{env.get('PATH', '')}"
+    vectors = manifest.get("interrupt_vectors", {})
+    env = _ghidra_env()
 
-        cmd = [
-            str(ghidra),
-            str(project_dir),
-            "NESProject",
-            "-import", str(prg_bin),
-            "-processor", "6502:LE:16:default",
-            "-loader", "BinaryLoader",
-            "-loader-baseAddr", "0x8000",
-            "-postScript", str(java_script),
-            "-scriptPath", str(scripts_dir),
-            "-deleteProject",
-        ]
+    # We analyze the LAST bank (fixed at $C000) with full analysis + vectors,
+    # then each switchable bank at $8000 with basic analysis.
+    # Merge all results into combined functions.json.
+    all_functions = {}
+    all_reg_accesses = []
 
-        print(f"[disassemble] Running Ghidra headless...")
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-        if result.returncode != 0:
-            print(f"[disassemble] Ghidra failed (rc={result.returncode}), falling back to capstone",
-                  file=sys.stderr)
-            print(result.stderr[-2000:], file=sys.stderr)
-            return False
+    for bank_idx in range(num_banks):
+        bank_offset = bank_idx * bank_size
+        bank_data = prg_data[bank_offset:bank_offset + bank_size]
+        is_last = (bank_idx == num_banks - 1)
+        base_addr = 0xC000 if is_last else 0x8000
 
-    print("[disassemble] Ghidra analysis complete")
+        # Write bank chunk to temp file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir)
+            bank_bin = Path(tmpdir) / f"bank_{bank_idx:02d}.bin"
+            bank_bin.write_bytes(bank_data)
+
+            bank_env = env.copy()
+            bank_env["NES_DISASM_OUT"] = str(disasm_dir)
+            bank_env["NES_BANK_IDX"] = str(bank_idx)
+
+            if is_last:
+                # Only set vectors for the fixed bank
+                bank_env["NES_RESET"] = vectors.get("RESET", "").replace("0x", "")
+                bank_env["NES_NMI"]   = vectors.get("NMI",   "").replace("0x", "")
+                bank_env["NES_IRQ"]   = vectors.get("IRQ",   "").replace("0x", "")
+            else:
+                bank_env["NES_RESET"] = ""
+                bank_env["NES_NMI"]   = ""
+                bank_env["NES_IRQ"]   = ""
+
+            cmd = [
+                str(ghidra),
+                str(project_dir),
+                f"Bank{bank_idx:02d}",
+                "-import", str(bank_bin),
+                "-processor", "6502:LE:16:default",
+                "-loader", "BinaryLoader",
+                "-loader-baseAddr", f"0x{base_addr:04X}",
+                "-postScript", str(ghidra_script),
+                "-scriptPath", str(scripts_dir),
+                "-deleteProject",
+            ]
+
+            print(f"[disassemble] Ghidra: bank {bank_idx:02d} @ ${base_addr:04X}...")
+            result = subprocess.run(cmd, capture_output=True, text=True, env=bank_env,
+                                    timeout=120)
+            if result.returncode != 0:
+                print(f"[disassemble]   bank {bank_idx:02d} failed — skipping")
+                # Write empty bank file as fallback
+                (disasm_dir / f"bank_{bank_idx:02d}.asm").write_text(
+                    f"; NES PRG Bank {bank_idx:02d}\n")
+                continue
+
+        # Merge functions from this bank
+        funcs_path = disasm_dir / "functions.json"
+        if funcs_path.exists():
+            try:
+                bank_funcs = json.loads(funcs_path.read_text())
+                all_functions.update(bank_funcs)
+            except json.JSONDecodeError:
+                pass
+
+        regs_path = disasm_dir / "register_accesses.json"
+        if regs_path.exists():
+            try:
+                bank_regs = json.loads(regs_path.read_text())
+                if isinstance(bank_regs, list):
+                    all_reg_accesses.extend(bank_regs)
+            except json.JSONDecodeError:
+                pass
+
+    # Write merged results
+    (disasm_dir / "functions.json").write_text(json.dumps(all_functions, indent=2))
+    (disasm_dir / "register_accesses.json").write_text(json.dumps(all_reg_accesses, indent=2))
+
+    total_funcs = len(all_functions)
+    total_instrs = sum(
+        len(f.get("source_asm", "").strip().split("\n"))
+        for f in all_functions.values()
+        if f.get("source_asm")
+    )
+    print(f"[disassemble] Ghidra: {total_funcs} functions, {total_instrs} instructions across {num_banks} banks")
     return True
 
 
