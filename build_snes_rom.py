@@ -210,15 +210,17 @@ def write_snes_header(rom_data: bytearray, manifest: dict):
     title = Path(manifest.get("source_rom", "NESPORT")).stem.upper()[:21]
     title_bytes = title.encode("ascii", errors="replace").ljust(21, b" ")
 
-    prg_size = manifest["prg_rom_size_bytes"]
-    rom_size_code = 0
-    sz = 1024
-    while sz < prg_size + 32768:
-        rom_size_code += 1
-        sz <<= 1
-
     battery = manifest.get("battery_backed", False)
     rom_type = ROM_TYPE_ROM_SRAM if battery else ROM_TYPE_ROM_ONLY
+
+    # ROM size code is based on the actual total ROM size (set after padding)
+    # N means 1<<N KB; computed from len(rom_data) which must already be
+    # padded to a power of 2 before calling this function.
+    total_kb = len(rom_data) // 1024
+    rom_size_code = max(total_kb.bit_length() - 1, 0) if total_kb > 0 else 0
+    # Verify: 1 << rom_size_code should equal total_kb for power-of-2 sizes
+    if (1 << rom_size_code) < total_kb:
+        rom_size_code += 1
 
     # Ensure rom_data is large enough to hold the header
     needed = SNES_HEADER_OFFSET_LOROM + 0x40
@@ -285,6 +287,15 @@ def assemble_rom(workspace: Path, manifest: dict, output_dir: Path) -> Path:
         # Append CHR data at end of ROM if space allows, then loader copies to VRAM
         rom_data.extend(chr_data)
         print(f"[build_snes_rom] Embedded {len(chr_data)} bytes of CHR data")
+
+    # Pad ROM to next power-of-2 size (SNES requirement)
+    raw_size = len(rom_data)
+    padded_size = 1
+    while padded_size < raw_size:
+        padded_size <<= 1
+    if padded_size > raw_size:
+        rom_data.extend(b"\xFF" * (padded_size - raw_size))
+        print(f"[build_snes_rom] Padded ROM from {raw_size} to {padded_size} bytes")
 
     write_snes_header(rom_data, manifest)
     # Zero checksum fields before summing so those bytes don't corrupt the result
