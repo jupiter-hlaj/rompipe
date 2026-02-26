@@ -319,7 +319,12 @@ def call_llm_translate(client, functions_batch: list[dict], rom_name: str,
     results = []
     system_prompt = build_llm_system_prompt()
 
-    for func in functions_batch:
+    for idx, func in enumerate(functions_batch):
+        src_lines = func.get("source_asm", "").strip().split("\n")
+        num_instrs = len([l for l in src_lines if l.strip() and not l.strip().startswith(";")])
+        print(f"[translate_cpu]     [{idx+1}/{len(functions_batch)}] {func['name']} "
+              f"({num_instrs} instrs) ... ", end="", flush=True)
+
         source = func.get("source_asm", "; (source not available)")
         user_msg = (
             f"ROM: {rom_name}, Mapper: {mapper_name}\n"
@@ -331,6 +336,7 @@ def call_llm_translate(client, functions_batch: list[dict], rom_name: str,
         )
 
         review_count = 0
+        t0 = time.time()
         try:
             if backend == "ollama":
                 translated = call_ollama(model, system_prompt, user_msg)
@@ -342,16 +348,21 @@ def call_llm_translate(client, functions_batch: list[dict], rom_name: str,
                     system=system_prompt,
                 )
                 translated = message.content[0].text
+            elapsed = round(time.time() - t0, 1)
             # Strip markdown code fences that local LLMs sometimes emit
             translated = re.sub(r"```\w*\n?", "", translated).strip()
+            out_lines = len(translated.split("\n"))
             # Validate the output actually assembles
             if workspace and not validate_asm_snippet(translated, workspace):
-                print(f"[translate_cpu]     {func['name']}: LLM output failed ca65 validation — using stub")
+                print(f"FAIL ({elapsed}s) — ca65 validation error, using stub", flush=True)
                 translated = None
             else:
                 review_count = translated.count("; REVIEW:")
                 confidence = max(0.0, 1.0 - review_count * 0.1)
+                print(f"OK ({elapsed}s, {out_lines} lines, confidence={confidence:.0%})", flush=True)
         except Exception as e:
+            elapsed = round(time.time() - t0, 1)
+            print(f"ERROR ({elapsed}s) — {e}", flush=True)
             translated = None
             confidence = 0.0
 
@@ -499,7 +510,7 @@ def main():
 
     backend = args.backend
     if backend == "ollama" and args.model.startswith("claude"):
-        args.model = "qwen3:8b"  # default Ollama model (best available locally)
+        args.model = "qwen2.5-coder:14b"  # default Ollama model (best available locally)
     print(f"[translate_cpu] LLM: {'enabled (' + backend + '/' + args.model + ')' if use_llm else 'disabled'}")
     translate_banks(workspace, manifest, args.model, use_llm, args)
 

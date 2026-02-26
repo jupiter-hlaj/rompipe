@@ -16,6 +16,7 @@ Runs all 8 pipeline stages sequentially:
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -56,7 +57,9 @@ def run_stage(stage_id: str, script: str, extra_args: list[str],
     log.info(f"Command: {' '.join(str(c) for c in cmd)}")
 
     start = time.time()
-    result = subprocess.run(cmd, capture_output=False, text=True)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    result = subprocess.run(cmd, capture_output=False, text=True, env=env)
     elapsed = round(time.time() - start, 2)
 
     success = result.returncode == 0
@@ -148,7 +151,7 @@ def main():
         "parse_rom":         [str(rom_path)] + workspace_args,
         "disassemble":       workspace_args,
         "translate_cpu":     workspace_args + (["--no-llm"] if args.no_llm else []) +
-                             ["--model", args.claude_model if args.backend != "ollama" else "qwen3:8b"] +
+                             ["--model", args.claude_model if args.backend != "ollama" else "qwen2.5-coder:14b"] +
                              ["--backend", args.backend],
         "translate_ppu":     workspace_args,
         "translate_mapper":  workspace_args,

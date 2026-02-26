@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # NES hardware register map — any access to these addresses is flagged
@@ -151,15 +152,27 @@ def disassemble_with_ghidra(
                 "-deleteProject",
             ]
 
-            print(f"[disassemble] Ghidra: bank {bank_idx:02d} @ ${base_addr:04X}...")
+            print(f"[disassemble] Ghidra: bank {bank_idx:02d}/{num_banks-1} @ ${base_addr:04X} ... ", end="", flush=True)
+            t0 = time.time()
             result = subprocess.run(cmd, capture_output=True, text=True, env=bank_env,
                                     timeout=120)
+            elapsed = round(time.time() - t0, 1)
+            # Extract function/register counts from script output
+            script_summary = ""
+            for line in result.stdout.split("\n"):
+                if "exported" in line:
+                    script_summary = line.split("exported")[-1].strip()
             if result.returncode != 0:
-                print(f"[disassemble]   bank {bank_idx:02d} failed — skipping")
+                print(f"FAILED ({elapsed}s)", flush=True)
                 # Write empty bank file as fallback
                 (disasm_dir / f"bank_{bank_idx:02d}.asm").write_text(
                     f"; NES PRG Bank {bank_idx:02d}\n")
                 continue
+            else:
+                if script_summary:
+                    print(f"OK ({elapsed}s) — {script_summary}", flush=True)
+                else:
+                    print(f"OK ({elapsed}s)", flush=True)
 
         # Merge functions from this bank
         funcs_path = disasm_dir / "functions.json"
