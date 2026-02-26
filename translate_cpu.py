@@ -281,7 +281,7 @@ def call_ollama(model: str, system_prompt: str, user_msg: str,
             "stream": False,
             "options": {"num_predict": 2048, "temperature": 0.2},
         },
-        timeout=120,
+        timeout=600,
     )
     resp.raise_for_status()
     return resp.json()["message"]["content"]
