@@ -257,18 +257,19 @@ def assemble_rom(workspace: Path, manifest: dict, output_dir: Path) -> Path:
     sfc_path = output_dir / "output.sfc"
 
     # Assemble — run from workspace so .include paths resolve correctly
-    print("[build_snes_rom] Assembling with ca65 ...")
+    print(f"[build_snes_rom] Assembling {master_asm.name} with ca65 ...", flush=True)
     result = subprocess.run(
         [ca65, "--cpu", "65816", "-o", str(obj_path.resolve()), str(master_asm.resolve())],
         capture_output=True, text=True, cwd=str(workspace.resolve()),
     )
     if result.returncode != 0:
-        print("[build_snes_rom] ca65 error:", file=sys.stderr)
-        print(result.stderr, file=sys.stderr)
+        print("[build_snes_rom] ca65 FAILED — errors:", file=sys.stderr, flush=True)
+        print(result.stderr, file=sys.stderr, flush=True)
         sys.exit(1)
+    print(f"[build_snes_rom] ca65 OK — {obj_path.name} ({obj_path.stat().st_size} bytes)", flush=True)
 
     # Link
-    print("[build_snes_rom] Linking with ld65 ...")
+    print(f"[build_snes_rom] Linking with ld65 → {sfc_path.name} ...", flush=True)
     result = subprocess.run(
         [ld65, "-C", str(lorom_cfg.resolve()), "-o", str(sfc_path.resolve()), str(obj_path.resolve())],
         capture_output=True, text=True, cwd=str(workspace.resolve()),

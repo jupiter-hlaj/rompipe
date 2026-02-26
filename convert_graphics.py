@@ -131,6 +131,11 @@ def convert_graphics(workspace: Path, upscale: bool = False):
 
         tile_map.append({"nes_tile": i, "snes_tile": i, "palette": 0})
 
+        # Progress every 256 tiles
+        if (i + 1) % 256 == 0 or i == tile_count - 1:
+            print(f"[convert_graphics]   {i+1}/{tile_count} tiles converted "
+                  f"({len(snes_chr)} SNES bytes)", flush=True)
+
     chr_snes_path = workspace / "chr_snes.bin"
     chr_snes_path.write_bytes(bytes(snes_chr))
     print(f"[convert_graphics] CHR SNES: {len(snes_chr)} bytes → {chr_snes_path}")

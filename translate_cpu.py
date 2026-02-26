@@ -267,7 +267,7 @@ def build_llm_system_prompt() -> str:
 
 def call_ollama(model: str, system_prompt: str, user_msg: str,
                 base_url: str = "http://localhost:11434") -> str:
-    """Call Ollama's local API and return the response text."""
+    """Call Ollama's local API with streaming output so user sees tokens in real time."""
     if _requests is None:
         raise RuntimeError("requests package not installed — pip install requests")
     resp = _requests.post(
@@ -278,13 +278,34 @@ def call_ollama(model: str, system_prompt: str, user_msg: str,
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg},
             ],
-            "stream": False,
+            "stream": True,
             "options": {"num_predict": 2048, "temperature": 0.2},
         },
         timeout=600,
+        stream=True,
     )
     resp.raise_for_status()
-    return resp.json()["message"]["content"]
+    full_text = []
+    token_count = 0
+    print(flush=True)  # newline before streamed output
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        try:
+            chunk = json.loads(line)
+            if "message" in chunk and "content" in chunk["message"]:
+                token = chunk["message"]["content"]
+                full_text.append(token)
+                token_count += 1
+                # Print every token as it arrives
+                print(f"\033[90m{token}\033[0m", end="", flush=True)
+            if chunk.get("done", False):
+                break
+        except json.JSONDecodeError:
+            continue
+    print(flush=True)  # newline after streamed output
+    print(f"[translate_cpu]       ({token_count} tokens generated)", flush=True)
+    return "".join(full_text)
 
 
 def validate_asm_snippet(asm_text: str, workspace: Path) -> bool:
