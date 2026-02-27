@@ -96,7 +96,7 @@ python3 main.py your_game.nes
 ```bash
 # Install Ollama if not already installed
 brew install ollama
-ollama pull qwen2.5-coder:7b
+ollama pull qwen2.5-coder:14b
 
 # Run with local LLM
 python3 main.py your_game.nes --backend ollama
@@ -115,7 +115,23 @@ python3 main.py your_game.nes --backend ollama
 
 Output will be at `output/output.sfc`. Open in any SNES emulator (Snes9x, bsnes, RetroArch).
 
-### 4. Optional: AI upscaled sprites
+### 4. Web Dashboard (recommended)
+
+Monitor the pipeline in real time via a beautiful dark-themed web UI:
+
+```bash
+python3 dashboard.py your_game.nes --backend ollama
+```
+
+Opens `http://localhost:5555` in your browser automatically. Shows:
+- Live stage progress with animated indicators
+- Streaming LLM token output as translation happens
+- ROM metadata, tile conversion progress, build results
+- Full scrollable pipeline log
+
+All the same CLI flags as `main.py` apply, plus `--port` and `--no-browser`.
+
+### 5. Optional: AI upscaled sprites
 
 Requires ComfyUI running locally on port 8188 with an SDXL checkpoint and ControlNet Tile model.
 
@@ -143,8 +159,18 @@ Options:
   --upscale            Upscale CHR tiles via ComfyUI (requires port 8188)
   --skip-audio         Skip audio conversion (produces silent ROM)
   --no-llm             Disable LLM pass (faster, deterministic only)
-  --claude-model MODEL LLM model name (default: claude-sonnet-4-6 / qwen2.5-coder:7b)
+  --claude-model MODEL LLM model name (default: claude-sonnet-4-6 / qwen2.5-coder:14b)
   --mapper-override N  Override mapper auto-detection
+```
+
+Dashboard mode (same flags plus dashboard-specific options):
+
+```
+python3 dashboard.py <input.nes> [options]
+
+Additional options:
+  --port PORT          Dashboard port (default: 5555)
+  --no-browser         Don't auto-open browser
 ```
 
 Individual stages can also be run in isolation (useful for debugging):
@@ -171,6 +197,8 @@ rompipe/
 ├── convert_graphics.py        # Stage 6: CHR 2bpp → SNES 4bpp
 ├── convert_audio.py           # Stage 7: NES APU → SPC700 BRR
 ├── build_snes_rom.py          # Stage 8: ca65/ld65 ROM assembly
+├── dashboard.py               # Real-time web dashboard (Flask + SSE)
+├── test_dashboard.py          # Dashboard test with mock pipeline data
 ├── requirements.txt           # Python dependencies
 ├── scripts/
 │   ├── NESAnalyzer.py         # Ghidra headless Jython script
@@ -277,7 +305,7 @@ The `NESAnalyzer.py` Jython script runs as a Ghidra post-analysis hook and expor
 - **Self-modifying code**: Flagged and sent to LLM but may not translate perfectly; check `translation_log.json` for `; REVIEW:` annotations
 - **CHR-RAM games**: Games with no CHR-ROM (e.g., some MMC1 titles like Zelda 1) skip the graphics conversion step
 - **Audio fidelity**: SPC700 BRR synthesis approximates NES APU channels — it will sound similar but not identical
-- **Local LLM quality**: `qwen2.5-coder:7b` via Ollama has a high failure rate on assembly translation. Larger models (14B+) or Claude API produce significantly better results
+- **Local LLM quality**: `qwen2.5-coder:14b` via Ollama is the recommended local model for 16GB RAM Macs. Claude API produces significantly better translation results
 
 ---
 

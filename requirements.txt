@@ -30,3 +30,6 @@ tqdm>=4.66.0
 
 # Colored terminal logging
 colorlog>=6.8.0
+
+# Real-time web dashboard (lightweight — Flask + Werkzeug + Jinja2)
+flask>=3.0.0
