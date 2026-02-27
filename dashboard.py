@@ -12,11 +12,13 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, Response, jsonify
@@ -261,6 +263,7 @@ def run_pipeline(rom_path: Path, args):
             state.broadcast("pipeline_failed", {"stage": stage_id})
             # Still write build report
             _write_report(output_dir, rom_path, manifest, stage_results, None)
+            _archive_run(rom_path, workspace, output_dir)
             return
 
     # Load final build report
@@ -272,9 +275,32 @@ def run_pipeline(rom_path: Path, args):
         with state.lock:
             state.build_report = json.loads(report_path.read_text())
 
+    # Archive run before declaring complete
+    _archive_run(rom_path, workspace, output_dir)
+
     state.pipeline_status = "complete"
     state.current_stage = None
     state.broadcast("pipeline_complete", state.build_report)
+
+
+def _archive_run(rom_path: Path, workspace: Path, output_dir: Path):
+    """Copy workspace + output to runs/{rom}_{timestamp}/ for safekeeping."""
+    runs_dir = Path(__file__).parent / "runs"
+    rom_name = Path(rom_path).stem
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = runs_dir / f"{rom_name}_{timestamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    if workspace.exists():
+        shutil.copytree(workspace, run_dir / "workspace", dirs_exist_ok=True)
+    if output_dir.exists():
+        shutil.copytree(output_dir, run_dir / "output", dirs_exist_ok=True)
+
+    msg = f"[rompipe] Run archived: {run_dir}"
+    print(msg, flush=True)
+    with state.lock:
+        state.log_lines.append(msg)
+    state.broadcast("log_line", {"stage": "archive", "line": msg, "elapsed": 0})
 
 
 def _estimate_fidelity(stage_results: list[dict], manifest: dict) -> str:

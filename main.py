@@ -17,9 +17,11 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 # Pipeline stage definitions: (stage_id, script, description, fatal_on_fail)
@@ -72,6 +74,23 @@ def run_stage(stage_id: str, script: str, extra_args: list[str],
         "returncode": result.returncode,
         "elapsed_seconds": elapsed,
     }
+
+
+def archive_run(rom_path: Path, workspace: Path, output_dir: Path):
+    """Copy workspace + output to runs/{rom}_{timestamp}/ for safekeeping."""
+    runs_dir = Path(__file__).parent / "runs"
+    rom_name = Path(rom_path).stem
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = runs_dir / f"{rom_name}_{timestamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    if workspace.exists():
+        shutil.copytree(workspace, run_dir / "workspace", dirs_exist_ok=True)
+    if output_dir.exists():
+        shutil.copytree(output_dir, run_dir / "output", dirs_exist_ok=True)
+
+    print(f"\n[rompipe] Run archived: {run_dir}", flush=True)
+    return run_dir
 
 
 def estimate_fidelity(stage_results: list[dict], manifest: dict) -> str:
@@ -192,6 +211,9 @@ def main():
 
     report_path = write_build_report(output_dir, rom_path, manifest, stage_results, sfc_path)
     report = json.loads(report_path.read_text())
+
+    # Archive run to runs/{rom}_{timestamp}/ for safekeeping
+    archive_run(rom_path, workspace, output_dir)
 
     log.info("=== Pipeline complete ===")
     log.info(f"Fidelity estimate: {report['fidelity_estimate']}")

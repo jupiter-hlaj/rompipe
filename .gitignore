@@ -2,6 +2,9 @@
 workspace/
 output/
 
+# Archived completed runs
+runs/
+
 # Compiled/assembled objects
 *.o
 *.sfc
