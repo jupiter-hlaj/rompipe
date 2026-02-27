@@ -264,6 +264,25 @@ TM_SHADOW:      .res 1   ; main screen designation shadow
     STA $420B           ; MDMAEN
     RTS
 .endproc
+
+; -----------------------------------------------------------------------------
+; JOYPAD1_READ  ($4016)
+; Returns: A = serial controller bit from port 1
+; Called once per bit in the polling loop (strobe done separately via STX $4016)
+; -----------------------------------------------------------------------------
+.proc JOYPAD1_READ
+    LDA $4016
+    RTS
+.endproc
+
+; -----------------------------------------------------------------------------
+; JOYPAD2_READ  ($4017)
+; Returns: A = serial controller bit from port 2
+; -----------------------------------------------------------------------------
+.proc JOYPAD2_READ
+    LDA $4017
+    RTS
+.endproc
 """
 
 PPU_INIT_ASM = """\
@@ -342,7 +361,8 @@ def generate_ppu_files(workspace: Path):
     print(f"[translate_ppu] Written: {init_path}")
     print("[translate_ppu] Wrappers: PPU_CTRL_WRITE, PPU_MASK_WRITE, PPU_SCROLL_WRITE, "
           "PPU_ADDR_WRITE, PPU_DATA_WRITE, PPU_DATA_READ, PPU_STATUS_READ, "
-          "OAM_ADDR_WRITE, OAM_DATA_WRITE, OAM_DMA_TRIGGER")
+          "OAM_ADDR_WRITE, OAM_DATA_WRITE, OAM_DMA_TRIGGER, "
+          "JOYPAD1_READ, JOYPAD2_READ")
 
 
 def main():
